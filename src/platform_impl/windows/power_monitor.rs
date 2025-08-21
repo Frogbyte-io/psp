@@ -5,14 +5,14 @@ use windows::{
     Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM},
     System::{
       LibraryLoader::GetModuleHandleA,
-      Power::RegisterPowerSettingNotification,
+      Power::RegisterSuspendResumeNotification,
       RemoteDesktop::{WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION},
-      SystemServices::GUID_POWERSCHEME_PERSONALITY,
     },
     UI::WindowsAndMessaging::{
       CreateWindowExA, DefWindowProcA, IsWindow, RegisterClassA, CW_USEDEFAULT,
-      PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, WINDOW_EX_STYLE, WM_POWERBROADCAST,
+      PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, WINDOW_EX_STYLE, WM_POWERBROADCAST,
       WM_WTSSESSION_CHANGE, WNDCLASSA, WS_OVERLAPPEDWINDOW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+      REGISTER_NOTIFICATION_FLAGS,
     },
   },
 };
@@ -32,14 +32,16 @@ impl PowerMonitor {
 
   pub fn start_listening(&self) -> std::result::Result<(), &'static str> {
     unsafe {
-      if RegisterPowerSettingNotification(HANDLE(self.hwnd.0), &GUID_POWERSCHEME_PERSONALITY, 0)
+      // Register for suspend/resume notifications (Windows 8+) following Electron's approach
+      if RegisterSuspendResumeNotification(HANDLE(self.hwnd.0), REGISTER_NOTIFICATION_FLAGS(0))
         .is_err()
       {
-        return Err("Failed to register power setting notification");
-      };
+        return Err("Failed to register suspend/resume notification");
+      }
+      // Register for session notifications (lock/unlock)
       if !WTSRegisterSessionNotification(self.hwnd, NOTIFY_FOR_THIS_SESSION).as_bool() {
         return Err("Failed to register session notification");
-      };
+      }
     }
     Ok(())
   }
@@ -90,17 +92,23 @@ unsafe fn create_power_events_listener() -> std::result::Result<HWND, &'static s
 extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
   unsafe {
     match message {
-      WM_POWERBROADCAST => match wparam.0 as u32 {
-        PBT_APMRESUMESUSPEND => {
-          let sender = PowerEventChannel::sender();
-          let _ = sender.send(PowerState::Resume);
+      WM_POWERBROADCAST => {
+        match wparam.0 as u32 {
+          PBT_APMRESUMEAUTOMATIC => {
+            let sender = PowerEventChannel::sender();
+            let _ = sender.send(PowerState::Resume);
+          }
+          PBT_APMSUSPEND => {
+            let sender = PowerEventChannel::sender();
+            let _ = sender.send(PowerState::Suspend);
+          }
+          _ => {}
+        }        // Handle PBT_POWERSETTINGCHANGE for Modern Standby
+        const PBT_POWERSETTINGCHANGE: u32 = 0x8013;
+        if wparam.0 as u32 == PBT_POWERSETTINGCHANGE {
+          // Remove complex GUID handling - Electron doesn't use this approach
         }
-        PBT_APMSUSPEND => {
-          let sender = PowerEventChannel::sender();
-          let _ = sender.send(PowerState::Suspend);
-        }
-        _ => {}
-      },
+      }
       WM_WTSSESSION_CHANGE => match wparam.0 as u32 {
         WTS_SESSION_LOCK => {
           let sender = PowerEventChannel::sender();
