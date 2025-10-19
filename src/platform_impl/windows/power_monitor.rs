@@ -41,12 +41,14 @@ impl PowerMonitor {
           type RegisterSuspendResumeNotificationFn = unsafe extern "system" fn(
             HANDLE,
             REGISTER_NOTIFICATION_FLAGS,
-          ) -> HANDLE; // HPOWERNOTIFY is an opaque handle
+            *mut HANDLE,
+          ) -> u32; // Returns status code, 0 for success
 
           let register_fn: RegisterSuspendResumeNotificationFn =
             std::mem::transmute(p);
-          let handle = register_fn(HANDLE(self.hwnd.0), REGISTER_NOTIFICATION_FLAGS(0));
-          if handle.0 == 0 {
+          let mut hpowernotify = HANDLE(0);
+          let status = register_fn(HANDLE(self.hwnd.0), REGISTER_NOTIFICATION_FLAGS(0), &mut hpowernotify);
+          if status != 0 || hpowernotify.0 == 0 {
             return Err("Failed to register suspend/resume notification");
           }
         }
