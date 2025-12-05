@@ -4,8 +4,7 @@ use windows::{
   Win32::{
     Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM},
     System::{
-      LibraryLoader::GetModuleHandleA,
-      Power::RegisterSuspendResumeNotification,
+      LibraryLoader::{GetModuleHandleA, GetProcAddress},
       RemoteDesktop::{WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION},
     },
     UI::WindowsAndMessaging::{
@@ -32,11 +31,26 @@ impl PowerMonitor {
 
   pub fn start_listening(&self) -> std::result::Result<(), &'static str> {
     unsafe {
-      // Register for suspend/resume notifications (Windows 8+) following Electron's approach
-      if RegisterSuspendResumeNotification(HANDLE(self.hwnd.0), REGISTER_NOTIFICATION_FLAGS(0))
-        .is_err()
-      {
-        return Err("Failed to register suspend/resume notification");
+      // Register for suspend/resume notifications on Windows 8+ only.
+      // Dynamically resolve the symbol so the binary can run on Windows 7,
+      // where this export does not exist in user32.dll.
+      let user32 = GetModuleHandleA(s!("user32.dll")).unwrap_or_default();
+      if user32.0 != 0 {
+        let proc = GetProcAddress(user32, s!("RegisterSuspendResumeNotification"));
+        if let Some(p) = proc {
+          type RegisterSuspendResumeNotificationFn = unsafe extern "system" fn(
+            HANDLE,
+            REGISTER_NOTIFICATION_FLAGS,
+          ) -> HANDLE; // HPOWERNOTIFY is an opaque handle
+
+          let register_fn: RegisterSuspendResumeNotificationFn =
+            std::mem::transmute(p);
+          let handle = register_fn(HANDLE(self.hwnd.0), REGISTER_NOTIFICATION_FLAGS(0));
+          if handle.0 == 0 {
+            return Err("Failed to register suspend/resume notification");
+          }
+        }
+        // If proc is null, we're on Win7 or older; fall back to WM_POWERBROADCAST only.
       }
       // Register for session notifications (lock/unlock)
       if !WTSRegisterSessionNotification(self.hwnd, NOTIFY_FOR_THIS_SESSION).as_bool() {
